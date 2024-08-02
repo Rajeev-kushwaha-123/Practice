@@ -19,9 +19,9 @@ db_url =  create_engine(f'{os.getenv("ENGINE")}://{os.getenv("DTABASE_USER")}:{o
 
 query = '''
 with t1 as(
-    select A.series as series,A.year as year, A.month as month_number, F.description as month, 
+    select A.series as series, A.year as year, A.month as month_number, F.description as month, 
     B.description as state, C.description as sector, D.description as grp, 
-    E.description as subgroup, A.index as index, A.inflation as inflation 
+    E.description as subgroup, A.index as index, A.inflation as inflation, A.base_year as base_year
     from cpi_fact as A 
     JOIN state as B on A.state_code = B.state_code 
     JOIN sector as C on A.sector_code = C.sector_code 
@@ -30,11 +30,12 @@ with t1 as(
     JOIN month as F on A.month = F.month 
     order by year, month_number, state, sector, grp, subgroup
 )
-SELECT year, month, month_number, state, sector, grp, subgroup, 
- inflation, index, concat(year, month_number) as year_month
-, concat(year,month) as xaxislabel 
+SELECT year, month, month_number, state, sector, grp, subgroup, base_year,
+ inflation, index, concat(year, month_number) as year_month,
+ concat(year, month) as xaxislabel 
 FROM t1 where subgroup is NULL or subgroup like '' and series = 'Current';
 '''
+
 # Fetch the data
 raw_data = pd.read_sql_query(query, db_url)
 cpi_data = pd.DataFrame(raw_data)
@@ -60,7 +61,7 @@ external_stylesheets = [
     },
 ]
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets, routes_pathname_prefix = '/viz/cpi/', requests_pathname_prefix = '/viz/cpi/')
-#app = dash.Dash(__name__, external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
+# app = dash.Dash(__name__, external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
 app.title = "Consumer Price Index"
 
 # Define default dropdown values function
@@ -97,6 +98,20 @@ app.layout = html.Div(
                             id='state-dropdown',
                             options=[{'label': state, 'value': state} for state in np.unique(cpi_data['state'])],
                             value=default_state,  # Default value
+                            className="dropdown",
+                            searchable= False,
+                            clearable=False,
+                        )
+                    ],
+                    style={'marginBottom': '20px'}
+                ),
+                html.Div(
+                    children=[
+                        html.Label("Base Year", className="menu-title"),
+                        dcc.Dropdown(
+                            id='base-year-dropdown',
+                            options=[{'label': base, 'value': base} for base in np.unique(cpi_data['base_year'])],
+                            value='2012',  # Default value
                             className="dropdown",
                             searchable= False,
                             clearable=False,
@@ -253,6 +268,18 @@ app.layout = html.Div(
         dcc.Download(id="download")
     ]
 )
+@app.callback(
+    Output('year-dropdown', 'options'),
+    [Input('base-year-dropdown', 'value')]
+)
+def update_year_dropdown(selected_base_year):
+    if selected_base_year:
+        filtered_years = cpi_data[cpi_data['base_year'] == selected_base_year]['year'].unique()
+        return [{'label': 'Select All', 'value': 'Select All'}]+ [{'label': year, 'value': year} for year in sorted(filtered_years)]
+    else:
+        return [{'label': 'Select All', 'value': 'Select All'}] + [{'label': year, 'value': year} for year in sorted(cpi_data['year'].unique())]
+
+
 # Define callback to update sector dropdown based on state selection
 @app.callback(
     Output('sector-dropdown', 'options'),
@@ -284,9 +311,10 @@ def update_group_dropdown(selected_sector):
      State('sector-dropdown', 'value'),
      State('group-dropdown', 'value'),
      State('plot-type-dropdown', 'value'),
-     State('year-dropdown', 'value')]
+     State('year-dropdown', 'value'),
+     State('base-year-dropdown', 'value')]
 )
-def update_plot(n_clicks, state, sector, group, plot_type, selected_years):
+def update_plot(n_clicks, state, sector, group, plot_type, selected_years,base):
     if n_clicks > 0 or (state, sector, group, plot_type) == get_default_dropdown_values():
         filtered_df = cpi_data.copy()
         if 'Select All' in selected_years:
@@ -296,8 +324,9 @@ def update_plot(n_clicks, state, sector, group, plot_type, selected_years):
 
         filtered_df = cpi_data[(cpi_data['year'].isin(selected_years))]
         filtered_df = filtered_df[filtered_df['state'] == state]
-        filtered_df = filtered_df[(filtered_df['sector'] == sector) & (filtered_df['grp'] == group)]
+        filtered_df = filtered_df[(filtered_df['sector'] == sector) & (filtered_df['grp'] == group)&(filtered_df['base_year'] == base)]
         filtered_df = filtered_df.sort_values('year_month2')
+        # print(filtered_df)
 
         fig = go.Figure()
 
@@ -360,9 +389,11 @@ def update_plot(n_clicks, state, sector, group, plot_type, selected_years):
      State('sector-dropdown', 'value'),
      State('group-dropdown', 'value'),
      State('plot-type-dropdown', 'value'),
-     State('year-dropdown', 'value')]
+     State('year-dropdown', 'value'),
+     State('base-year-dropdown', 'value')
+     ]
 )
-def download_plot(download_clicks, state, sector, group, plot_type, selected_years):
+def download_plot(download_clicks, state, sector, group, plot_type, selected_years,base):
     ctx = dash.callback_context
     if not ctx.triggered:
         return None
@@ -376,7 +407,7 @@ def download_plot(download_clicks, state, sector, group, plot_type, selected_yea
                 selected_years = [year for year in selected_years if year != 'Select All']
 
             filtered_df = filtered_df[filtered_df['state'] == state]
-            filtered_df = filtered_df[(filtered_df['sector'] == sector) & (filtered_df['grp'] == group)]
+            filtered_df = filtered_df[(filtered_df['sector'] == sector) & (filtered_df['grp'] == group)&(filtered_df['base_year'] == base)]
             filtered_df = filtered_df.sort_values('year_month2')
 
             fig = go.Figure()
